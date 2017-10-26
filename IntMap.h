@@ -6,9 +6,7 @@
 #include <stdexcept>
 #include "stringbuilder.h"
 
-/// <summary>
-/// derived from code at https://github.com/mikvor/hashmapTest
-/// </summary>
+
 namespace iProlog
 {
 	class IntMap : public java::io::Serializable
