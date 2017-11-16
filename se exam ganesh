@@ -5,7 +5,7 @@ public class Hello {
         public static void main(String args[]) throws IOException
         {
            
-            String fileName = "C:\\Users\\srite\\IdeaProjects\\first\\src\\palindrome.txt";
+            String fileName = "C:\\Users\\srite\\IdeaProjects\\first\\src\\1000.txt";
 
             
             String line = null;
