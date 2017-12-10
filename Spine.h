@@ -25,3 +25,15 @@ public:
 	/**
 	* creates a spine - as a snapshot of some runtime elements
 	*/
+	Spine(const int* gs0, const int base, const IntList* gs, const int ttop, const int k, int* cs):hd(gs0[0]),base(base),gs(IntList::gettail(IntList::app(gs0, gs))),ttop(ttop),k(k),cs(cs) {
+	}
+
+	/**
+	* creates a specialized spine returning an answer (with no goals left to solve)
+	*/
+	Spine(const int hd, const int ttop):hd(hd),ttop(ttop),base(0) {
+		gs = IntList::empty;
+		k = -1;
+		cs = nullptr;
+	}
+};
