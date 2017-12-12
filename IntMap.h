@@ -167,7 +167,7 @@ public:
 		}
 	}
 
-	// for use as IntSet - Paul Tarau
+
 
 	const bool contains(const int key) {
 		return NO_VALUE != get(key);
@@ -220,7 +220,6 @@ public:
 		return r;
 	}
 
-	// end changes
 
 	const int put(const int key, const int value) {
 		if (key == FREE_KEY) {
@@ -315,7 +314,7 @@ public:
 	}
 
 	std::string toString() {
-		//return java.util.Arrays.toString(m_data);
+		
 		std::string b = "{";
 		const int l = m_data_length;
 		bool first = true;
