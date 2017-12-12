@@ -5,16 +5,19 @@
 #include "ObStack.h"
 #include "IMap.h"
 #include "IntMap.h"
+#include "IntStack.h"
+#include "Toks.h"
 #include <string>
 #include <vector>
+#include <algorithm>
 #include <unordered_map>
 class Engine
 {
 private:
 	std::vector<std::string> slist;
-	const IntStack* trail;
-	const IntStack* ustack;
-	const ObStack<Spine> * spines;
+	IntStack* trail;
+	IntStack* ustack;
+	ObStack<Spine> * spines;
 	/**
 	* tags of our heap cells - that can also be seen as
 	* instruction codes in a compiled implementation
@@ -111,6 +114,337 @@ private:
 	const void push(const int i) {
 		heap[++top] = i;
 	}
+
+	const void expand() {
+		const int l = MINSIZE;
+		int* newstack = new int[];
+		MINSIZE = l << 1;
+		for (int i = 0; i < l;i++)
+			heap[i] =  newstack[i];
+		heap = newstack;
+	}
+
+	void ensureSize(const int more) {
+		if (1 + top + more >= MINSIZE) {
+			expand();
+		}
+	}
+
+	static std::vector<int> toNums(const std::vector<Clause> clauses) {
+		const int l = clauses.size();
+		std::vector<int> cls;
+		for (int i = 0; i < l; i++) {
+			cls.push_back(i);
+		}
+		return cls;
+	}
+
+	/*
+	* encodes string constants into symbols while leaving
+	* other data types untouched
+	*/
+	const int encode(const int t, const std::string s) {
+		int w;
+		try {
+			w = std::stoi(s);
+		}
+		catch (const int e) {
+			if (C == t) {
+				w = addSym(s);
+			}
+			else
+				//pp("bad in encode=" + t + ":" + s);
+				return tag(BAD, 666);
+		}
+		return tag(t, w);
+	}
+
+	/**
+	* true if cell x is a variable
+	* assumes that variables are tagged with 0 or 1
+	*/
+	const static bool isVAR(const int x) {
+		//const int t = tagOf(x);
+		//return V == t || U == t;
+		return tagOf(x) < 2;
+	}
+
+	const void setRef(const int w, const int r) {
+		heap[detag(w)] = r;
+	}
+
+	/**
+	* removes binding for variable cells
+	* above savedTop
+	*/
+	void unwindTrail(const int savedTop) {
+		while (savedTop < trail->getTop()) {
+			const int href = trail->pop();
+			// assert href is var
+
+			setRef(href, href);
+		}
+	}
+
+	/**
+	* scans reference chains starting from a variable
+	* until it points to an unbound root variable or some
+	* non-variable cell
+	*/
+	const int deref(int x) {
+		while (isVAR(x)) {
+			const int r = getRef(x);
+			if (r == x) {
+				break;
+			}
+			x = r;
+		}
+		return x;
+	}
+
+
+	const bool unify(const int base) {
+		while (!ustack->isEmpty()) {
+			const int x1 = deref(ustack->pop());
+			const int x2 = deref(ustack->pop());
+			if (x1 != x2) {
+				const int t1 = tagOf(x1);
+				const int t2 = tagOf(x2);
+				const int w1 = detag(x1);
+				const int w2 = detag(x2);
+
+				if (isVAR(x1)) { /* unb. var. v1 */
+					if (isVAR(x2) && w2 > w1) { /* unb. var. v2 */
+						heap[w2] = x1;
+						if (w2 <= base) {
+							trail->push(x2);
+						}
+					}
+					else { // x2 nonvar or older
+						heap[w1] = x2;
+						if (w1 <= base) {
+							trail->push(x1);
+						}
+					}
+				}
+				else if (isVAR(x2)) { /* x1 is NONVAR */
+					heap[w2] = x1;
+					if (w2 <= base) {
+						trail->push(x2);
+					}
+				}
+				else if (R == t1 && R == t2) { // both should be R
+					if (!unify_args(w1, w2))
+						return false;
+				}
+				else
+					return false;
+			}
+		}
+		return true;
+	}
+
+	const bool unify_args(const int w1, const int w2) {
+		const int v1 = heap[w1];
+		const int v2 = heap[w2];
+		// both should be A
+		const int n1 = detag(v1);
+		const int n2 = detag(v2);
+		if (n1 != n2)
+			return false;
+		const int b1 = 1 + w1;
+		const int b2 = 1 + w2;
+		for (int i = n1 - 1; i >= 0; i--) {
+			const int i1 = b1 + i;
+			const int i2 = b2 + i;
+			const int u1 = heap[i1];
+			const int u2 = heap[i2];
+			if (u1 == u2) {
+				continue;
+			}
+			ustack->push(u2);
+			ustack->push(u1);
+		}
+		return true;
+	}
+
+	
+
+	/**
+	* relocates a variable or array reference cell by b
+	* assumes var/ref codes V,U,R are 0,1,2
+	*/
+	const static int relocate(const int b, const int cell) {
+		return tagOf(cell) < 3 ? cell + b : cell;
+	}
+
+	/**
+	* pushes slice[from,to] of array cs of cells to heap
+	*/
+	const void pushCells(const int b, const int from, const int to, const int base) {
+		ensureSize(to - from);
+		for (int i = from; i < to; i++) {
+			push(relocate(b, heap[base + i]));
+		}
+	}
+
+	/**
+	* pushes slice[from,to] of array cs of cells to heap
+	*/
+	const void pushCells(const int b, const int from, const int to, const int* cs) {
+		ensureSize(to - from);
+		for (int i = from; i < to; i++) {
+			push(relocate(b, cs[i]));
+		}
+	}
+
+	/**
+	* copies and relocates head of clause at offset from heap to heap
+	*/
+	const int pushHead(const int b, const Clause C) {
+		pushCells(b, 0, C.neck, C.base);
+		const int head = C.hgs[0];
+		return relocate(b, head);
+	}
+
+	/**
+	* copies and relocates body of clause at offset from heap to heap
+	* while also placing head as the first element of array gs that
+	* when returned contains references to the toplevel spine of the clause
+	*/
+	const int* pushBody(const int b, const int head, const Clause C) {
+		pushCells(b, C.neck, C.len, C.base);
+		const int l = C.hgs.size();
+		int* gs = new int[l];
+		gs[0] = head;
+		for (int k = 1; k < l; k++) {
+			const int cell = C.hgs[k];
+			gs[k] = relocate(b, cell);
+		}
+		return gs;
+	}
+
+	/**
+	* makes, if needed, registers associated to top goal of a Spine
+	* these registers will be reused when matching with candidate clauses
+	* note that xs contains dereferenced cells - this is done once for
+	* each goal's toplevel subterms
+	*/
+	const void makeIndexArgs(Spine G, const int goal) {
+		if (NULL != G.xs)
+			return;
+
+		const int p = 1 + detag(goal);
+		const int n = std::min(MAXIND, detag(getRef(goal)));
+
+		int* xs = new int[MAXIND];
+
+		for (int i = 0; i < n; i++) {
+			const int cell = deref(heap[p + i]);
+			xs[i] = cell2index(cell);
+		}
+
+		G.xs = xs;
+
+		if (imaps.empty())
+			return;
+		int* cs = IMap<int>::get(imaps, vmaps, xs);
+		G.cs = cs;
+	}
+
+	const int* getIndexables(const int ref) {
+		const int p = 1 + detag(ref);
+		const int n = detag(getRef(ref));
+		int* xs = new int[MAXIND];
+		for (int i = 0; i < MAXIND && i < n; i++) {
+			const int cell = deref(heap[p + i]);
+			xs[i] = cell2index(cell);
+		}
+		return xs;
+	}
+
+	const int cell2index(const int cell) {
+		int x = 0;
+		const int t = tagOf(cell);
+		switch (t) {
+		case R:
+			x = getRef(cell);
+			break;
+		case C:
+		case N:
+			x = cell;
+			break;
+			// 0 otherwise - assert: tagging with R,C,N <>0
+		}
+		return x;
+	}
+
+	/**
+	* tests if the head of a clause, not yet copied to the heap
+	* for execution could possibly match the current goal, an
+	* abstraction of which has been place in xs
+	*/
+	const bool match(const int* xs, const Clause C0) {
+		for (int i = 0; i < MAXIND; i++) {
+			const int x = xs[i];
+			const int y = C0.xs[i];
+			if (0 == x || 0 == y) {
+				continue;
+			}
+			if (x != y)
+				return false;
+		}
+		return true;
+	}
+
+	/**
+	* transforms a spine containing references to choice point and
+	* immutable list of goals into a new spine, by reducing the
+	* first goal in the list with a clause that successfully
+	* unifies with it - in which case places the goals of the
+	* clause at the top of the new list of goals, in reverse order
+	*/
+	const Spine* unfold(Spine G) {
+
+		const int ttop = trail->getTop();
+		const int htop = getTop();
+		const int base = htop + 1;
+
+		const int goal = IntList::gethead(G.gs);
+
+		makeIndexArgs(G, goal);
+
+		const int last = G.cs.size();
+		for (int k = G.k; k < last; k++) {
+			const Clause C0 = clauses[G.cs[k]];
+
+			if (!match(G.xs, C0))
+				continue;
+
+			const int base0 = base - C0.base;
+			const int b = tag(V, base0);
+			const int head = pushHead(b, C0);
+
+			ustack->clear(); // set up unification stack
+
+			ustack->push(head);
+			ustack->push(goal);
+
+			if (!unify(base)) {
+				unwindTrail(ttop);
+				setTop(htop);
+				continue;
+			}
+			const int* gs = pushBody(b, head, C0);
+			const IntList *newgs = IntList::gettail(IntList::app(gs, IntList::gettail(G.gs)));
+			G.k = k + 1;
+			if (!IntList::isEmpty(newgs))
+				return new Spine(gs, base, IntList::gettail(G.gs), ttop, 0, cls);
+			else
+				return answer(ttop);
+		} // end for
+		return NULL;
+	}
 public:
 	const static int MAXIND = 3; // number of index args
 	const static int START_INDEX = 20;
@@ -144,9 +478,9 @@ public:
 	/**
 	* trimmed down clauses ready to be quickly relocated to the heap
 	*/
-	const Clause ** clauses;
+	std::vector<Clause> clauses;
 
-	const int* cls;
+	std::vector<int> cls;
 	/** symbol table made of map + reverse map from ints to syms */
 
 	std::unordered_map<std::string, int> * syms;
@@ -175,8 +509,8 @@ public:
 
 	Spine query;
 
-	const IMap<int>** imaps;
-	const IntMap** vmaps;
+	const std::vector<IMap<int>> imaps;
+	const std::vector<IntMap> vmaps;
 
 
 
@@ -187,41 +521,29 @@ public:
 	/**
 	* dynamic array operation: doubles when full
 	*/
-	private const void expand() {
-		const int l = heap.length;
-		const int[] newstack = new int[l << 1];
-
-		System.arraycopy(heap, 0, newstack, 0, l);
-		heap = newstack;
-	}
-
-	private void ensureSize(const int more) {
-		if (1 + top + more >= heap.length) {
-			expand();
-		}
-	}
+	
 
 	/**
 	* expands a "Xs lists .." statements to "Xs holds" statements
 	*/
 
-	static std::vector<std::string*> maybeExpand(const std::vector<std::string> Ws) {
+	static std::vector<std::vector<std::string>> maybeExpand(const std::vector<std::string> Ws) {
 		const std::string W = Ws.at(0);
 		std::string temp = "l:";
-		std::vector<std::string*> Rss;
+		std::vector<std::vector<std::string>> Rss;
 		if (W.length() < 2 || !temp.compare(W.substr(0, 1)))
 			return Rss;
 
 		const int l = Ws.size();
 		const std::string V = W.substr(2);
 		for (int i = 1; i < l; i++) {
-			std::string * Rs = new std::string[4];
+			std::vector<std::string> Rs;
 			const std::string Vi = 1 == i ? V : V + "__" + std::to_string(i - 1);
 			const std::string Vii = V + "__" + std::to_string(i);
-			Rs[0] = "h:" + Vi;
-			Rs[1] = "c:list";
-			Rs[2] = Ws.at(i);
-			Rs[3] = i == l - 1 ? "c:nil" : "v:" + Vii;
+			Rs.push_back("h:" + Vi);
+			Rs.push_back("c:list");
+			Rs.push_back(Ws.at(i));
+			Rs.push_back(i == l - 1 ? "c:nil" : "v:" + Vii);
 			Rss.push_back(Rs);
 		}
 		return Rss;
@@ -231,21 +553,21 @@ public:
 	/**
 	* expands, if needed, "lists" statements in sequence of statements
 	*/
-	const static std::vector<std::string*> mapExpand(const std::vector<std::vector<std::string>> Wss) {
-		std::vector<std::string*> Rss;
+	const static std::vector<std::vector<std::string>> mapExpand(const std::vector<std::vector<std::string>> Wss) {
+		std::vector<std::vector<std::string>> Rss;
 		for (const std::vector<std::string> Ws : Wss) {
 
-			const std::vector<std::string*> Hss = maybeExpand(Ws);
+			const std::vector<std::vector<std::string>> Hss = maybeExpand(Ws);
 
 			if (Hss.empty()) {
-				std::string* ws = new std::string[Ws.size()];
+				std::vector<std::string> ws;
 				for (int i = 0; i < Ws.size(); i++) {
-					ws[i].assign(Ws.at(i));
+					ws.push_back(Ws.at(i));
 				}
 				Rss.push_back(ws);
 			}
 			else {
-				for (std::string* X : Hss) {
+				for (std::vector<std::string> X : Hss) {
 					Rss.push_back(X);
 				}
 			}
@@ -257,30 +579,30 @@ public:
 	* loads a program from a .nl file of
 	* "natural language" equivalents of Prolog/HiLog statements
 	*/
-	Clause* dload(const std::string s) {
+	std::vector<Clause> dload(const std::string s) {
 		const bool fromFile = true;
-		const std::vector<std::vector<std::vector<String>>> Wsss = Toks.toSentences(s, fromFile);
+		std::vector<std::vector<std::vector<std::string>>> Wsss = Toks::toSentences(s, fromFile);
 
-		const std::vector<Clause> Cs = new std::vector<Clause>();
+		std::vector<Clause> Cs;
 
-		for (const std::vector<std::vector<String>> Wss : Wsss) {
+		for (std::vector<std::vector<std::string>> Wss : Wsss) {
 			// clause starts here
 
-			const LinkedHashMap<String, IntStack> refs = new LinkedHashMap<String, IntStack>();
-			const IntStack cs = new IntStack();
-			const IntStack gs = new IntStack();
+			std::unordered_map<std::string, IntStack*> *refs = new std::unordered_map<std::string, IntStack*>();
+			IntStack * cs = new IntStack();
+			IntStack * gs = new IntStack();
 
-			const ArrayList<String[]> Rss = mapExpand(Wss);
+			const std::vector<std::vector<std::string>> Rss = mapExpand(Wss);
 			int k = 0;
-			for (const String[] ws : Rss) {
+			for (std::vector<std::string> ws : Rss) {
 
 				// head or body element starts here
 
-				const int l = ws.length;
-				gs.push(tag(R, k++));
-				cs.push(tag(A, l));
+				const int l = ws.size();
+				gs->push(tag(R, k++));
+				cs->push(tag(A, l));
 
-				for (String w : ws) {
+				for (std::string w : ws) {
 
 					// head or body subterm starts here
 
@@ -290,136 +612,103 @@ public:
 
 					const std::string L = w.substr(2);
 
-					switch (w.charAt(0)) {
+					switch (w.at(0)) {
 					case 'c':
-						cs.push(encode(C, L));
+						cs->push(encode(C, L));
 						k++;
 						break;
 					case 'n':
-						cs.push(encode(N, L));
+						cs->push(encode(N, L));
 						k++;
 						break;
 					case 'v': {
-						IntStack Is = refs.get(L);
-						if (null == Is) {
+						IntStack * Is = refs->at(L);
+						if (NULL == Is) {
 							Is = new IntStack();
-							refs.put(L, Is);
+							refs->insert_or_assign(L, Is);
 						}
-						Is.push(k);
-						cs.push(tag(BAD, k)); // just in case we miss this
+						Is->push(k);
+						cs->push(tag(BAD, k)); // just in case we miss this
 						k++;
 					}
 							  break;
 					case 'h': {
-						IntStack Is = refs.get(L);
-						if (null == Is) {
+						IntStack * Is = refs->at(L);
+						if (NULL == Is) {
 							Is = new IntStack();
-							refs.put(L, Is);
+							refs->insert_or_assign(L, Is);
 						}
-						Is.push(k - 1);
-						cs.set(k - 1, tag(A, l - 1));
-						gs.pop();
+						Is->push(k - 1);
+						cs->set(k - 1, tag(A, l - 1));
+						gs->pop();
 					}
 							  break;
 					default:
-						Main.pp("FORGOTTEN=" + w);
+						printf("FORGOTTEN=%s" + w.c_str);
 					} // end subterm
 				} // end element
 			} // end clause
 
 			  // linker
-			const Iterator<IntStack> K = refs.values().iterator();
-
-			while (K.hasNext()) {
-				const IntStack Is = K.next();
+			for (std::unordered_map<std::string, IntStack*>::iterator K= refs->begin(); K != refs->end(); ++K){
+				IntStack *Is = K->second;
 
 				// finding the A among refs
 				int leader = -1;
-				for (const int j : Is.toArray()) {
-					if (A == tagOf(cs.get(j))) {
-						leader = j;
+				int* array = Is->toArray();
+				int size = Is->size();
+				for (int j = 0; j < size;j++) {
+					if (A == tagOf(cs->get(array[j]))) {
+						leader = array[j];
 
 						break;
 					}
 				}
 				if (-1 == leader) {
 					// for vars, first V others U
-					leader = Is.get(0);
-					for (const int i : Is.toArray()) {
-						if (i == leader) {
-							cs.set(i, tag(V, i));
+					leader = Is->get(0);
+					int * array = Is->toArray();
+					int size = Is->size();
+					for (int j = 0; j < size; j++) {
+						if (array[j] == leader) {
+							cs->set(array[j], tag(V, array[j]));
 						}
 						else {
-							cs.set(i, tag(U, leader));
+							cs->set(array[j], tag(U, leader));
 						}
 
 					}
 				}
 				else {
-					for (const int i : Is.toArray()) {
-						if (i == leader) {
+					int * array = Is->toArray();
+					int size = Is->size();
+					for (int j = 0; j < size;j++) {
+						if (array[j] == leader) {
 							continue;
 						}
-						cs.set(i, tag(R, leader));
+						cs->set(array[j], tag(R, leader));
 					}
 				}
 			}
 
-			const int neck = 1 == gs.size() ? cs.size() : detag(gs.get(1));
-			const int[] tgs = gs.toArray();
+			const int neck = 1 == gs->size() ? cs->size() : detag(gs->get(1));
+			const int* tgs = gs->toArray();
 
-			const Clause C = putClause(cs.toArray(), tgs, neck);
+			const Clause C = putClause(cs->toArray(), tgs, neck);
 
-			Cs.add(C);
+			Cs.push_back(C);
 
 		} // end clause set
 
 		const int ccount = Cs.size();
-		const Clause[] cls = new Clause[ccount];
+		std::vector<Clause> cls;
 		for (int i = 0; i < ccount; i++) {
-			cls[i] = Cs.get(i);
+			cls.push_back(Cs.at(i));
 		}
 		return cls;
 	}
 
-	private static const int[] toNums(const Clause[] clauses) {
-		const int l = clauses.length;
-		const int[] cls = new int[l];
-		for (int i = 0; i < l; i++) {
-			cls[i] = i;
-		}
-		return cls;
-	}
-
-	/*
-	* encodes string constants into symbols while leaving
-	* other data types untouched
-	*/
-	private const int encode(const int t, const String s) {
-		int w;
-		try {
-			w = Integer.parseInt(s);
-		}
-		catch (const Exception e) {
-			if (C == t) {
-				w = addSym(s);
-			}
-			else
-				//pp("bad in encode=" + t + ":" + s);
-				return tag(BAD, 666);
-		}
-		return tag(t, w);
-	}
-
-	/**
-	* true if cell x is a variable
-	* assumes that variables are tagged with 0 or 1
-	*/
-	const private static bool isVAR(const int x) {
-		//const int t = tagOf(x);
-		//return V == t || U == t;
-		return tagOf(x) < 2;
-	}
+	
 
 	/**
 	* returns the heap cell another cell points to
@@ -431,62 +720,31 @@ public:
 	/*
 	* sets a heap cell to point to another one
 	*/
-	const private void setRef(const int w, const int r) {
-		heap[detag(w)] = r;
-	}
-
-	/**
-	* removes binding for variable cells
-	* above savedTop
-	*/
-	private void unwindTrail(const int savedTop) {
-		while (savedTop < trail.getTop()) {
-			const int href = trail.pop();
-			// assert href is var
-
-			setRef(href, href);
-		}
-	}
-
-	/**
-	* scans reference chains starting from a variable
-	* until it points to an unbound root variable or some
-	* non-variable cell
-	*/
-	const private int deref(int x) {
-		while (isVAR(x)) {
-			const int r = getRef(x);
-			if (r == x) {
-				break;
-			}
-			x = r;
-		}
-		return x;
-	}
+	
 
 	/**
 	* raw display of a term - to be overridden
 	*/
-	String showTerm(const int x) {
+	std::string showTerm(const int x) {
 		return showTerm(exportTerm(x));
 	}
 
 	/**
 	* raw display of a externalized term
 	*/
-	String showTerm(const Object O) {
-		if (O instanceof Object[])
-			return Arrays.deepToString((Object[]) O);
-		return O.toString();
-	}
+	//std::string showTerm(const Object O) {
+//		if (O instanceof Object[])
+//			return Arrays.deepToString((Object[]) O);
+//		return O.toString();
+//	}
 
 	/**
 	* prints out content of the trail
 	*/
 	void ppTrail() {
-		for (int i = 0; i <= trail.getTop(); i++) {
-			const int t = trail.get(i);
-			Main.pp("trail[" + i + "]=" + showCell(t) + ":" + showTerm(t));
+		for (int i = 0; i <= trail->getTop(); i++) {
+			const int t = trail->get(i);
+			printf("trail[%d]=%s:%s",i,showCell(t).c_str,showTerm(t).c_str);
 		}
 	}
 
@@ -540,29 +798,44 @@ public:
 	* pointing to its head followed by cells pointing to its body's
 	* goals
 	*/
-	static int[] getSpine(const int[] cs) {
+	static int* getSpine(const int* cs) {
 		const int a = cs[1];
 		const int w = detag(a);
-		const int[] rs = new int[w - 1];
+		int* rs = new int[w - 1];
 		for (int i = 0; i < w - 1; i++) {
 			const int x = cs[3 + i];
 			const int t = tagOf(x);
 			if (R != t) {
-				Main.pp("*** getSpine: unexpected tag=" + t);
-				return null;
+				printf("*** getSpine: unexpected tag=%d",t);
+				return NULL;
 			}
 			rs[i] = detag(x);
 		}
 		return rs;
 	}
+	
 
+	/**
+	* places a clause built by the Toks reader on the heap
+	*/
+	Clause* putClause(const int* cs, const int* gs, const int neck) {
+		const int base = size();
+		const int b = tag(V, base);
+		const int len = cs.length;
+		pushCells(b, 0, len, cs);
+		for (int i = 0; i < gs.length; i++) {
+			gs[i] = relocate(b, gs[i]);
+		}
+		const int* xs = getIndexables(gs[0]);
+		return new Clause(len, gs, base, neck, xs);
+	}
 	/**
 	* raw display of a cell as tag : value
 	*/
-	const String showCell(const int w) {
+	const std::string showCell(const int w) {
 		const int t = tagOf(w);
 		const int val = detag(w);
-		String s = null;
+		std::string s = NULL;
 		switch (t) {
 		case V:
 			s = "v:" + val;
@@ -592,26 +865,29 @@ public:
 	* a displayer for cells
 	*/
 
-	String showCells(const int base, const int len) {
-		const StringBuffer buf = new StringBuffer();
+	std::string showCells(const int base, const int len) {
+		std::string buf = "", temp;
 		for (int k = 0; k < len; k++) {
 			const int instr = heap[base + k];
-
-			buf.append("[" + (base + k) + "]");
+			temp = "[" + (base + k);
+			temp = temp + "]";
+			buf.append(temp);
 			buf.append(showCell(instr));
 			buf.append(" ");
 		}
-		return buf.toString();
+		return buf;
 	}
 
-	String showCells(const int[] cs) {
-		const StringBuffer buf = new StringBuffer();
-		for (int k = 0; k < cs.length; k++) {
-			buf.append("[" + k + "]");
+	std::string showCells(const std::vector<int> cs) {
+		std::string buf = "", temp;
+		for (int k = 0; k < cs.size(); k++) {
+			temp = "[" + k;
+			temp = temp + "]";
+			buf.append(temp);
 			buf.append(showCell(cs[k]));
 			buf.append(" ");
 		}
-		return buf.toString();
+		return buf;
 	}
 
 	/**
@@ -640,280 +916,26 @@ public:
 	* unification algorithm for cells X1 and X2 on ustack that also takes care
 	* to trail bindigs below a given heap address "base"
 	*/
-	const private bool unify(const int base) {
-		while (!ustack.isEmpty()) {
-			const int x1 = deref(ustack.pop());
-			const int x2 = deref(ustack.pop());
-			if (x1 != x2) {
-				const int t1 = tagOf(x1);
-				const int t2 = tagOf(x2);
-				const int w1 = detag(x1);
-				const int w2 = detag(x2);
-
-				if (isVAR(x1)) { /* unb. var. v1 */
-					if (isVAR(x2) && w2 > w1) { /* unb. var. v2 */
-						heap[w2] = x1;
-						if (w2 <= base) {
-							trail.push(x2);
-						}
-					}
-					else { // x2 nonvar or older
-						heap[w1] = x2;
-						if (w1 <= base) {
-							trail.push(x1);
-						}
-					}
-				}
-				else if (isVAR(x2)) { /* x1 is NONVAR */
-					heap[w2] = x1;
-					if (w2 <= base) {
-						trail.push(x2);
-					}
-				}
-				else if (R == t1 && R == t2) { // both should be R
-					if (!unify_args(w1, w2))
-						return false;
-				}
-				else
-					return false;
-			}
-		}
-		return true;
-	}
-
-	const private bool unify_args(const int w1, const int w2) {
-		const int v1 = heap[w1];
-		const int v2 = heap[w2];
-		// both should be A
-		const int n1 = detag(v1);
-		const int n2 = detag(v2);
-		if (n1 != n2)
-			return false;
-		const int b1 = 1 + w1;
-		const int b2 = 1 + w2;
-		for (int i = n1 - 1; i >= 0; i--) {
-			const int i1 = b1 + i;
-			const int i2 = b2 + i;
-			const int u1 = heap[i1];
-			const int u2 = heap[i2];
-			if (u1 == u2) {
-				continue;
-			}
-			ustack.push(u2);
-			ustack.push(u1);
-		}
-		return true;
-	}
-
-	/**
-	* places a clause built by the Toks reader on the heap
-	*/
-	Clause putClause(const int[] cs, const int[] gs, const int neck) {
-		const int base = size();
-		const int b = tag(V, base);
-		const int len = cs.length;
-		pushCells(b, 0, len, cs);
-		for (int i = 0; i < gs.length; i++) {
-			gs[i] = relocate(b, gs[i]);
-		}
-		const int[] xs = getIndexables(gs[0]);
-		return new Clause(len, gs, base, neck, xs);
-	}
-
-	/**
-	* relocates a variable or array reference cell by b
-	* assumes var/ref codes V,U,R are 0,1,2
-	*/
-	const private static int relocate(const int b, const int cell) {
-		return tagOf(cell) < 3 ? cell + b : cell;
-	}
-
-	/**
-	* pushes slice[from,to] of array cs of cells to heap
-	*/
-	const private void pushCells(const int b, const int from, const int to, const int base) {
-		ensureSize(to - from);
-		for (int i = from; i < to; i++) {
-			push(relocate(b, heap[base + i]));
-		}
-	}
-
-	/**
-	* pushes slice[from,to] of array cs of cells to heap
-	*/
-	const private void pushCells(const int b, const int from, const int to, const int[] cs) {
-		ensureSize(to - from);
-		for (int i = from; i < to; i++) {
-			push(relocate(b, cs[i]));
-		}
-	}
-
-	/**
-	* copies and relocates head of clause at offset from heap to heap
-	*/
-	const private int pushHead(const int b, const Clause C) {
-		pushCells(b, 0, C.neck, C.base);
-		const int head = C.hgs[0];
-		return relocate(b, head);
-	}
-
-	/**
-	* copies and relocates body of clause at offset from heap to heap
-	* while also placing head as the first element of array gs that
-	* when returned contains references to the toplevel spine of the clause
-	*/
-	const private int[] pushBody(const int b, const int head, const Clause C) {
-		pushCells(b, C.neck, C.len, C.base);
-		const int l = C.hgs.length;
-		const int[] gs = new int[l];
-		gs[0] = head;
-		for (int k = 1; k < l; k++) {
-			const int cell = C.hgs[k];
-			gs[k] = relocate(b, cell);
-		}
-		return gs;
-	}
-
-	/**
-	* makes, if needed, registers associated to top goal of a Spine
-	* these registers will be reused when matching with candidate clauses
-	* note that xs contains dereferenced cells - this is done once for
-	* each goal's toplevel subterms
-	*/
-	const private void makeIndexArgs(const Spine G, const int goal) {
-		if (null != G.xs)
-			return;
-
-		const int p = 1 + detag(goal);
-		const int n = Math.min(MAXIND, detag(getRef(goal)));
-
-		const int[] xs = new int[MAXIND];
-
-		for (int i = 0; i < n; i++) {
-			const int cell = deref(heap[p + i]);
-			xs[i] = cell2index(cell);
-		}
-
-		G.xs = xs;
-
-		if (null == imaps)
-			return;
-		const int[] cs = IMap.get(imaps, vmaps, xs);
-		G.cs = cs;
-	}
-
-	const private int[] getIndexables(const int ref) {
-		const int p = 1 + detag(ref);
-		const int n = detag(getRef(ref));
-		const int[] xs = new int[MAXIND];
-		for (int i = 0; i < MAXIND && i < n; i++) {
-			const int cell = deref(heap[p + i]);
-			xs[i] = cell2index(cell);
-		}
-		return xs;
-	}
-
-	const private int cell2index(const int cell) {
-		int x = 0;
-		const int t = tagOf(cell);
-		switch (t) {
-		case R:
-			x = getRef(cell);
-			break;
-		case C:
-		case N:
-			x = cell;
-			break;
-			// 0 otherwise - assert: tagging with R,C,N <>0
-		}
-		return x;
-	}
-
-	/**
-	* tests if the head of a clause, not yet copied to the heap
-	* for execution could possibly match the current goal, an
-	* abstraction of which has been place in xs
-	*/
-	private const bool match(const int[] xs, const Clause C0) {
-		for (int i = 0; i < MAXIND; i++) {
-			const int x = xs[i];
-			const int y = C0.xs[i];
-			if (0 == x || 0 == y) {
-				continue;
-			}
-			if (x != y)
-				return false;
-		}
-		return true;
-	}
-
-	/**
-	* transforms a spine containing references to choice point and
-	* immutable list of goals into a new spine, by reducing the
-	* first goal in the list with a clause that successfully
-	* unifies with it - in which case places the goals of the
-	* clause at the top of the new list of goals, in reverse order
-	*/
-	const private Spine unfold(const Spine G) {
-
-		const int ttop = trail.getTop();
-		const int htop = getTop();
-		const int base = htop + 1;
-
-		const int goal = IntList.head(G.gs);
-
-		makeIndexArgs(G, goal);
-
-		const int last = G.cs.length;
-		for (int k = G.k; k < last; k++) {
-			const Clause C0 = clauses[G.cs[k]];
-
-			if (!match(G.xs, C0))
-				continue;
-
-			const int base0 = base - C0.base;
-			const int b = tag(V, base0);
-			const int head = pushHead(b, C0);
-
-			ustack.clear(); // set up unification stack
-
-			ustack.push(head);
-			ustack.push(goal);
-
-			if (!unify(base)) {
-				unwindTrail(ttop);
-				setTop(htop);
-				continue;
-			}
-			const int[] gs = pushBody(b, head, C0);
-			const IntList newgs = IntList.tail(IntList.app(gs, IntList.tail(G.gs)));
-			G.k = k + 1;
-			if (!IntList.isEmpty(newgs))
-				return new Spine(gs, base, IntList.tail(G.gs), ttop, 0, cls);
-			else
-				return answer(ttop);
-		} // end for
-		return null;
-	}
+	
 
 	/**
 	* extracts a query - by convention of the form
 	* goal(Vars):-body to be executed by the engine
 	*/
 	Clause getQuery() {
-		return clauses[clauses.length - 1];
+		return clauses[clauses.size() - 1];
 	}
 
 	/**
 	* returns the initial spine built from the
 	* query from which execution starts
 	*/
-	Spine init() {
+	Spine* init() {
 		const int base = size();
 
 		const Clause G = getQuery();
-		const Spine Q = new Spine(G.hgs, base, IntList.empty, trail.getTop(), 0, cls);
-		spines.push(Q);
+		Spine *Q = new Spine(G.hgs, base, IntList::empty, trail->getTop(), 0, cls);
+		spines->push(*Q);
 		return Q;
 	}
 
@@ -922,8 +944,8 @@ public:
 	* the top of the trail to allow the caller to retrieve
 	* more answers by forcing backtracking
 	*/
-	const private Spine answer(const int ttop) {
-		return new Spine(spines.get(0).hd, ttop);
+	const Spine* answer(const int ttop) {
+		return new Spine(spines->get(0).hd, ttop);
 	}
 
 	/**
@@ -1034,7 +1056,7 @@ public:
 		}
 	}
 
-	const IMap<Integer>** index(const Clause** clauses, const IntMap** vmaps) {
+	const IMap<Integer>* index(const Clause** clauses, const IntMap** vmaps) {
 		if (clauses.length < START_INDEX)
 			return null;
 
