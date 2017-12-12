@@ -104,8 +104,7 @@ public:
 			vims[i] = vim;
 		}
 
-		//Main.pp("-------ims=" + Arrays.toString(ims));
-		//Main.pp("-------vims=" + Arrays.toString(vims));
+		
 
 		const IntStack* cs = IntMap.intersect(ims, vims, ms.size()); // $$$ add vmaps here
 		const int* is = cs->toArray();
