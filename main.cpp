@@ -1,4 +1,3 @@
-#include "Main.h"
 #include "Engine.h"
 
 namespace iProlog
