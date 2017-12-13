@@ -106,15 +106,7 @@ private:
 		top = -1;
 	}
 
-	/**
-	* Pushes an element - top is incremented frirst than the
-	* element is assigned. This means top point to the last assigned
-	* element - which can be returned with peek().
-	*/
-	const void push(const int i) {
-		heap[++top] = i;
-	}
-
+	
 	const void expand() {
 		const int l = MINSIZE;
 		int* newstack = new int[];
