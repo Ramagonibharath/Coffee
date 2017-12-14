@@ -349,7 +349,7 @@ class IntMap implements java.io.Serializable {
 	  System.out.println("IntMap post adding key with no value: " + sizeargobj.toString() + " and its value is: "+sizeargobj.get(27));
 	  System.out.println(sizeargobj.size());
     System.out.println("Removing/Deleting key not in map: "+  sizeargobj.delete(0)); 
-    System.out.println("Removing/Deleting key not in map: "+  sizeargobj.delete(25) + "; /nCurrent Map: " + sizeargobj);
+    System.out.println("Removing/Deleting key not in map: "+  sizeargobj.delete(25) + "; \nCurrent Map: " + sizeargobj);
 	  System.out.println("Above map size:" + sizeargobj.size());
 	  System.out.println("Intersect two maps: "+ IntMap.intersect(new IntMap[]{sizeargobj}, new IntMap[]{sizefillargobj}));
 }
